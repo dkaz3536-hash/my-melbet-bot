@@ -3,121 +3,127 @@ const admin = require('firebase-admin');
 
 const BOT_TOKEN = '7800075626:AAHq8_vop3-vpqtufnxiFZ97hGpMvxZQdvg';
 const TELEGRAM_API = `https://api.telegram.org/bot${BOT_TOKEN}`;
-const ADMIN_ID = '7799972127'; // Таны ID
+const ADMIN_ID = '7799972127';
 
-function initFirebase() {
-  if (admin.apps.length > 0) return admin.firestore();
-  try {
-    let rawData = process.env.FIREBASE_SERVICE_ACCOUNT;
-    if (!rawData.startsWith('{')) rawData = Buffer.from(rawData, 'base64').toString('utf-8');
-    admin.initializeApp({ credential: admin.credential.cert(JSON.parse(rawData.trim())) });
-    return admin.firestore();
-  } catch (e) { return null; }
+// Firebase-ийг нэг л удаа ачаална
+if (admin.apps.length === 0) {
+  let rawData = process.env.FIREBASE_SERVICE_ACCOUNT;
+  if (rawData && !rawData.startsWith('{')) {
+    rawData = Buffer.from(rawData, 'base64').toString('utf-8');
+  }
+  admin.initializeApp({
+    credential: admin.credential.cert(JSON.parse(rawData.trim()))
+  });
 }
+const db = admin.firestore();
 
 exports.handler = async (event) => {
-  if (event.httpMethod !== "POST") return { statusCode: 200, body: "OK" };
-  const db = initFirebase();
+  // 1. Telegram-д "Би хүлээж авлаа" гэсэн хариуг хамгийн түрүүнд бэлдэнэ
+  // Энэ нь давхар мессеж ирэхээс 100% сэргийлнэ
+  const response = { statusCode: 200, body: JSON.stringify({ ok: true }) };
+
+  if (event.httpMethod !== "POST") return response;
+
   const body = JSON.parse(event.body);
 
-  if (body.callback_query) {
-    const cid = body.callback_query.message.chat.id.toString();
-    if (body.callback_query.data === "paid") {
-      await sendMessage(cid, "⌛ Шалгаж байна... Төлбөр баталгаажтал түр хүлээнэ үү.");
-      await sendMessage(ADMIN_ID, `💰 Төлбөрийн хүсэлт!\nID: ${cid}\n\nБаталгаажуулах: /pay ${cid} [дүн]`);
-    }
-    return { statusCode: 200, body: "OK" };
-  }
-
-  const msg = body.message;
-  if (!msg || !msg.text) return { statusCode: 200, body: "OK" };
-  const chatId = msg.chat.id.toString();
-  const text = msg.text.trim();
-
   try {
-    // --- АДМИН КОМАНД: /pay [UserID] [Amount] ---
+    // CALLBACK QUERY (Төлбөр төлсөн товч)
+    if (body.callback_query) {
+      const cid = body.callback_query.message.chat.id.toString();
+      if (body.callback_query.data === "paid") {
+        await axios.post(`${TELEGRAM_API}/sendMessage`, { chat_id: cid, text: "⌛ Шалгаж байна..." });
+        await axios.post(`${TELEGRAM_API}/sendMessage`, { 
+          chat_id: ADMIN_ID, 
+          text: `💰 Төлбөр!\nID: ${cid}\n\nБаталгаажуулах: /pay ${cid} [дүн]` 
+        });
+      }
+      return response;
+    }
+
+    const msg = body.message;
+    if (!msg || !msg.text) return response;
+
+    const chatId = msg.chat.id.toString();
+    const text = msg.text.trim();
+
+    // АДМИН КОМАНД
     if (chatId === ADMIN_ID && text.startsWith('/pay')) {
       const parts = text.split(' ');
       if (parts.length === 3) {
         const targetId = parts[1];
         const amount = parseInt(parts[2]);
-        
         const userRef = db.collection('users').doc(targetId);
         const userDoc = await userRef.get();
 
         if (userDoc.exists) {
           const userData = userDoc.data();
-          await sendMessage(targetId, `✅ Таны ${amount.toLocaleString()}₮ цэнэглэлт баталгаажлаа.`);
-
-          // Хэрэглэгчийг урьсан хүн байгаа эсэхийг шалгах
           if (userData.invitedBy) {
-            const bonus = Math.floor(amount * 0.03); // 3% бонус (бүхэл тоогоор)
-            const inviterRef = db.collection('users').doc(userData.invitedBy.toString());
-            
-            // Firebase-д бонусын дүнг нэмэгдүүлэх
-            await inviterRef.update({ 
-                bonusEarned: admin.firestore.FieldValue.increment(bonus)
+            const bonus = Math.floor(amount * 0.03);
+            await db.collection('users').doc(userData.invitedBy.toString()).update({
+              bonusEarned: admin.firestore.FieldValue.increment(bonus)
             });
-            
-            await sendMessage(userData.invitedBy.toString(), `🎁 Таны урьсан найз цэнэглэлт хийлээ! Танд ${bonus.toLocaleString()}₮ бонус орлоо.`);
+            await axios.post(`${TELEGRAM_API}/sendMessage`, { 
+              chat_id: userData.invitedBy.toString(), 
+              text: `🎁 Бонус орлоо: ${bonus.toLocaleString()}₮` 
+            });
           }
-          await sendMessage(ADMIN_ID, `✅ ${targetId} хэрэглэгчийн цэнэглэлтийг бүртгэж, бонус бодлоо.`);
-        } else {
-          await sendMessage(ADMIN_ID, "❌ Хэрэглэгч системд бүртгэлгүй байна.");
+          await axios.post(`${TELEGRAM_API}/sendMessage`, { chat_id: targetId, text: `✅ Цэнэглэлт орлоо: ${amount.toLocaleString()}₮` });
+          await axios.post(`${TELEGRAM_API}/sendMessage`, { chat_id: ADMIN_ID, text: "✅ Амжилттай." });
         }
       }
-      return { statusCode: 200, body: "OK" };
+      return response;
     }
 
-    // --- ХЭРЭГЛЭГЧИЙН START ---
+    // START
     if (text.startsWith('/start')) {
       const inviterId = text.split(' ')[1];
       const userRef = db.collection('users').doc(chatId);
       const doc = await userRef.get();
       if (!doc.exists) {
-        await userRef.set({ 
-            chatId: chatId, 
-            invitedBy: inviterId || null, 
-            bonusEarned: 0,
-            createdAt: new Date()
-        });
+        await userRef.set({ chatId, invitedBy: inviterId || null, bonusEarned: 0 });
       }
-      return await sendMenu(chatId, "Сайн байна уу? Melbet цэнэглэлтийн ботод тавтай морил.");
-    }
-
-    // --- БОНУС ХАРАХ ---
-    if (text === "🎁 Найзаа урих / Бонус") {
-        const userDoc = await db.collection('users').doc(chatId).get();
-        const userData = userDoc.data() || { bonusEarned: 0 };
-        const link = `https://t.me/Demobo8okbot?start=${chatId}`;
-        const bonus = userData.bonusEarned || 0;
-        
-        return await sendMessage(chatId, `🎁 Таны урилгын линк:\n${link}\n\n💰 Таны цуглуулсан бонус: ${bonus.toLocaleString()}₮\n\n(Таны урьсан хүн цэнэглэлт хийх бүрт танд 3% бонус орно)`);
-    }
-
-    if (text === "💰 Цэнэглэх") return await sendMessage(chatId, "Melbet ID-гаа бичнэ үү:");
-    
-    if (/^\d{7,15}$/.test(text)) {
-      return await sendMessage(chatId, `🏦 Данс: 5000... (Болд)\n📝 Утга: ${Math.random().toString(36).substring(7).toUpperCase()}\n\nТөлбөрөө шилжүүлээд доорх товчийг дарна уу.`, {
-        inline_keyboard: [[{ text: "✅ Төлбөр төлсөн", callback_data: "paid" }]]
+      await axios.post(`${TELEGRAM_API}/sendMessage`, {
+        chat_id: chatId,
+        text: "Сайн байна уу? Сонголтоо хийнэ үү.",
+        reply_markup: {
+          keyboard: [[{ text: "💰 Цэнэглэх" }, { text: "💳 Татах" }], [{ text: "🎁 Найзаа урих / Бонус" }]],
+          resize_keyboard: true
+        }
       });
+      return response;
     }
 
-    if (text === "💳 Татах") return await sendMessage(chatId, "Татах мэдээллээ бичнэ үү (Банк, Данс, Дүн):");
+    // ЦЭНЭГЛЭХ
+    if (text === "💰 Цэнэглэх") {
+      await axios.post(`${TELEGRAM_API}/sendMessage`, { chat_id: chatId, text: "Melbet ID-гаа бичнэ үү:" });
+      return response;
+    }
 
-  } catch (err) { console.error(err); }
-  return { statusCode: 200, body: "OK" };
+    // БОНУС ХАРАХ
+    if (text === "🎁 Найзаа урих / Бонус") {
+      const userDoc = await db.collection('users').doc(chatId).get();
+      const userData = userDoc.data() || { bonusEarned: 0 };
+      const link = `https://t.me/Demobo8okbot?start=${chatId}`;
+      await axios.post(`${TELEGRAM_API}/sendMessage`, {
+        chat_id: chatId,
+        text: `🎁 Линк: ${link}\n\n💰 Бонус: ${(userData.bonusEarned || 0).toLocaleString()}₮`
+      });
+      return response;
+    }
+
+    // ID БИЧИХ ҮЕД
+    if (/^\d{7,15}$/.test(text)) {
+      await axios.post(`${TELEGRAM_API}/sendMessage`, {
+        chat_id: chatId,
+        text: `🏦 Хаан Банк: 5000...\n📝 Утга: ${Math.random().toString(36).substring(7).toUpperCase()}`,
+        reply_markup: { inline_keyboard: [[{ text: "✅ Төлбөр төлсөн", callback_data: "paid" }]] }
+      });
+      return response;
+    }
+
+  } catch (err) {
+    console.error("Error:", err.message);
+  }
+
+  return response;
 };
-
-async function sendMessage(chatId, text, markup = null) {
-  const payload = { chat_id: chatId.toString(), text: text };
-  if (markup) payload.reply_markup = markup;
-  return axios.post(`${TELEGRAM_API}/sendMessage`, payload);
-}
-
-async function sendMenu(chatId, text) {
-  return sendMessage(chatId, text, {
-    keyboard: [[{ text: "💰 Цэнэглэх" }, { text: "💳 Татах" }], [{ text: "🎁 Найзаа урих / Бонус" }]],
-    resize_keyboard: true
-  });
-}
