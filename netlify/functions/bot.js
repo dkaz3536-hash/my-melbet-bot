@@ -3,7 +3,7 @@ const admin = require('firebase-admin');
 
 const BOT_TOKEN = '7800075626:AAHq8_vop3-vpqtufnxiFZ97hGpMvxZQdvg';
 const TELEGRAM_API = `https://api.telegram.org/bot${BOT_TOKEN}`;
-const ADMIN_ID = '984210857'; // Энийг та өөрийнхөөрөө сольсон эсэхээ шалгаарай
+const ADMIN_ID = '7799972127'; // Таны ID зөв байна
 
 function initFirebase() {
   if (admin.apps.length > 0) return admin.firestore();
@@ -20,11 +20,17 @@ exports.handler = async (event) => {
   const db = initFirebase();
   const body = JSON.parse(event.body);
 
+  // 1. Товчлуур дарах үед (Callback Query)
   if (body.callback_query) {
     const cid = body.callback_query.message.chat.id.toString();
     if (body.callback_query.data === "paid") {
-      await sendMessage(cid, "⌛ Шалгаж байна... Төлбөр баталгаажтал түр хүлээнэ үү.");
-      await sendMessage(ADMIN_ID, `💰 Төлбөрийн хүсэлт!\nID: ${cid}\n\nБаталгаажуулах: /pay ${cid} [дүн]`);
+      try {
+        await sendMessage(cid, "⌛ Шалгаж байна... Төлбөр баталгаажтал түр хүлээнэ үү.");
+        // АДМИН руу мэдэгдэл илгээх (Энд ADMIN_ID-г шууд ашиглав)
+        await sendMessage(ADMIN_ID, `💰 Төлбөрийн хүсэлт ирлээ!\nХэрэглэгчийн ID: ${cid}\n\nБаталгаажуулах: /pay ${cid} 5000`);
+      } catch (e) {
+        console.error("Admin notify error:", e.message);
+      }
     }
     return { statusCode: 200, body: "OK" };
   }
@@ -35,6 +41,7 @@ exports.handler = async (event) => {
   const text = msg.text.trim();
 
   try {
+    // 2. АДМИН КОМАНД ШАЛГАХ
     if (chatId === ADMIN_ID && text.startsWith('/pay')) {
       const parts = text.split(' ');
       if (parts.length === 3) {
@@ -46,6 +53,7 @@ exports.handler = async (event) => {
         if (userDoc.exists) {
           await userRef.update({ balance: admin.firestore.FieldValue.increment(amount) });
           await sendMessage(targetId, `✅ Таны ${amount}₮ цэнэглэлт орлоо!`);
+          
           const userData = userDoc.data();
           if (userData.invitedBy) {
             const bonus = amount * 0.03;
@@ -55,12 +63,15 @@ exports.handler = async (event) => {
             });
             await sendMessage(userData.invitedBy.toString(), `🎁 Бонус орлоо: ${bonus}₮`);
           }
-          await sendMessage(ADMIN_ID, "✅ Амжилттай бүртгэгдлээ.");
+          await sendMessage(ADMIN_ID, "✅ Гүйлгээ амжилттай бүртгэгдлээ.");
+        } else {
+          await sendMessage(ADMIN_ID, "❌ Хэрэглэгч олдсонгүй.");
         }
       }
       return { statusCode: 200, body: "OK" };
     }
 
+    // 3. START КОМАНД
     if (text.startsWith('/start')) {
       const inviterId = text.split(' ')[1];
       if (db) {
@@ -70,44 +81,38 @@ exports.handler = async (event) => {
           await userRef.set({ chatId, invitedBy: inviterId || null, balance: 0, bonusEarned: 0 });
         }
       }
-      await sendMenu(chatId, "Тавтай морил! Сонголтоо хийнэ үү.");
+      await sendMenu(chatId, "Тавтай морил!");
       return { statusCode: 200, body: "OK" };
     }
 
+    // Бусад товчлуурууд...
     if (text === "💰 Цэнэглэх") {
-      await sendMessage(chatId, "Melbet ID-гаа бичнэ үү (Зөвхөн тоо):");
+      await sendMessage(chatId, "Melbet ID-гаа бичнэ үү:");
       return { statusCode: 200, body: "OK" };
     }
-
+    
     if (text === "🎁 Найзаа урих / Бонус") {
-      if (db) {
-        const userDoc = await db.collection('users').doc(chatId).get();
-        const userData = userDoc.data() || { balance: 0, bonusEarned: 0 };
-        const link = `https://t.me/Demobo8okbot?start=${chatId}`;
-        await sendMessage(chatId, `🎁 Таны линк: ${link}\n\n💰 Баланс: ${userData.balance}₮\n🎈 Нийт бонус: ${userData.bonusEarned}₮`);
-      }
-      return { statusCode: 200, body: "OK" };
-    }
-
-    if (text === "💳 Татах") {
-      await sendMessage(chatId, "Татах мэдээллээ бичнэ үү (Банк, Данс, Дүн):");
+      const userDoc = await db.collection('users').doc(chatId).get();
+      const userData = userDoc.data() || { balance: 0, bonusEarned: 0 };
+      const link = `https://t.me/Demobo8okbot?start=${chatId}`;
+      await sendMessage(chatId, `🎁 Урилгын линк: ${link}\n\n💰 Баланс: ${userData.balance || 0}₮\n🎈 Бонус: ${userData.bonusEarned || 0}₮`);
       return { statusCode: 200, body: "OK" };
     }
 
     if (/^\d{7,15}$/.test(text)) {
-      await sendMessage(chatId, `🏦 Данс: 5000... (Болд)\n📝 Утга: ${Math.random().toString(36).substring(7).toUpperCase()}\n\nТөлбөрөө шилжүүлээд доорх товчийг дарна уу.`, {
+      await sendMessage(chatId, `🏦 Хаан Банк: 5000...\n📝 Утга: ${Math.random().toString(36).substring(7).toUpperCase()}`, {
         inline_keyboard: [[{ text: "✅ Төлбөр төлсөн", callback_data: "paid" }]]
       });
       return { statusCode: 200, body: "OK" };
     }
 
-  } catch (err) { console.error("Error log:", err.response ? err.response.data : err.message); }
+  } catch (err) { console.error("Error:", err.message); }
   return { statusCode: 200, body: "OK" };
 };
 
 async function sendMessage(chatId, text, markup = null) {
-  const payload = { chat_id: chatId, text: text };
-  if (markup) payload.reply_markup = markup; // Зөвхөн markup байвал л нэмнэ
+  const payload = { chat_id: chatId.toString(), text: text };
+  if (markup) payload.reply_markup = markup;
   return axios.post(`${TELEGRAM_API}/sendMessage`, payload);
 }
 
