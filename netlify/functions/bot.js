@@ -1,30 +1,41 @@
 const axios = require('axios');
 const admin = require('firebase-admin');
 
-// Firebase-ийг ачаалж чадахгүй бол алдааг мэдээлэх хэсэг
-try {
-  if (!admin.apps.length) {
-    const serviceAccount = process.env.FIREBASE_SERVICE_ACCOUNT;
+// Firebase-ийг илүү найдвартай ачаалах функц
+function initFirebase() {
+  if (admin.apps.length > 0) return admin.firestore();
+
+  try {
+    let serviceAccount = process.env.FIREBASE_SERVICE_ACCOUNT;
     
     if (!serviceAccount) {
-      console.error("АЛДАА: FIREBASE_SERVICE_ACCOUNT олдсонгүй!");
-    } else {
-      admin.initializeApp({
-        credential: admin.credential.cert(JSON.parse(serviceAccount))
-      });
-      console.log("Firebase амжилттай холбогдлоо.");
+      throw new Error("FIREBASE_SERVICE_ACCOUNT олдохгүй байна");
     }
+
+    // Хэрэв текст дотор шинэ мөр (\n) байгаа бол засах
+    const formattedAccount = serviceAccount.replace(/\\n/g, '\n');
+    const parsedAccount = JSON.parse(formattedAccount);
+
+    admin.initializeApp({
+      credential: admin.credential.cert(parsedAccount)
+    });
+    
+    console.log("Firebase холбогдлоо");
+    return admin.firestore();
+  } catch (error) {
+    console.error("Firebase алдаа:", error.message);
+    return null;
   }
-} catch (e) {
-  console.error("Firebase ачаалахад алдаа гарлаа:", e.message);
 }
 
-const db = admin.firestore();
 const BOT_TOKEN = '7800075626:AAHq8_vop3-vpqtufnxiFZ97hGpMvxZQdvg';
 const TELEGRAM_API = `https://api.telegram.org/bot${BOT_TOKEN}`;
 
 exports.handler = async (event) => {
   if (event.httpMethod !== "POST") return { statusCode: 200, body: "OK" };
+
+  const db = initFirebase();
+  if (!db) return { statusCode: 200, body: "Firebase Error" };
 
   try {
     const body = JSON.parse(event.body);
@@ -35,18 +46,16 @@ exports.handler = async (event) => {
     const text = msg.text.trim();
 
     if (text === '/start') {
-      // Firebase-д хэрэглэгч бүртгэх
       await db.collection('users').doc(chatId).set({
         chatId: chatId,
         lastActive: new Date()
       }, { merge: true });
 
-      // Цэс илгээх
       await axios.post(`${TELEGRAM_API}/sendMessage`, {
         chat_id: chatId,
-        text: "Сайн байна уу? Бот ажиллахад бэлэн боллоо.",
+        text: "✅ Систем ажиллаж байна. Үйлдэл сонгоно уу:",
         reply_markup: {
-          keyboard: [[{ text: "💰 Цэнэглэх" }, { text: "💳 Татах" }]],
+          keyboard: [[{ text: "💰 Цэнэглэх" }, { text: "💳 Татах" }], [{ text: "🎁 Найзаа урих" }]],
           resize_keyboard: true
         }
       });
